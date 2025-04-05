@@ -44,7 +44,7 @@ import { IWorkbenchLayoutService, Parts } from '../../../../services/layout/brow
 import { IViewsService } from '../../../../services/views/common/viewsService.js';
 import { EXTENSIONS_CATEGORY, IExtensionsWorkbenchService } from '../../../extensions/common/extensions.js';
 import { ChatContextKeys } from '../../common/chatContextKeys.js';
-import { IChatEditingSession, WorkingSetEntryState } from '../../common/chatEditingService.js';
+import { IChatEditingSession, ModifiedFileEntryState } from '../../common/chatEditingService.js';
 import { ChatEntitlement, ChatSentiment, IChatEntitlementService } from '../../common/chatEntitlementService.js';
 import { extractAgentAndCommand } from '../../common/chatParserTypes.js';
 import { IChatDetail, IChatService } from '../../common/chatService.js';
@@ -53,7 +53,7 @@ import { IChatWidgetHistoryService } from '../../common/chatWidgetHistoryService
 import { ChatMode, validateChatMode } from '../../common/constants.js';
 import { CopilotUsageExtensionFeatureId } from '../../common/languageModelStats.js';
 import { ILanguageModelToolsService } from '../../common/languageModelToolsService.js';
-import { ChatViewId, EditsViewId, IChatWidget, IChatWidgetService, showChatView, showCopilotView } from '../chat.js';
+import { ChatViewId, IChatWidget, IChatWidgetService, showChatView, showCopilotView } from '../chat.js';
 import { IChatEditorOptions } from '../chatEditor.js';
 import { ChatEditorInput } from '../chatEditorInput.js';
 import { ChatViewPane } from '../chatViewPane.js';
@@ -194,9 +194,8 @@ export function registerChatActions() {
 			const viewDescriptorService = accessor.get(IViewDescriptorService);
 
 			const chatLocation = viewDescriptorService.getViewLocationById(ChatViewId);
-			const editsLocation = viewDescriptorService.getViewLocationById(EditsViewId);
 
-			if (viewsService.isViewVisible(ChatViewId) || (chatLocation === editsLocation && viewsService.isViewVisible(EditsViewId))) {
+			if (viewsService.isViewVisible(ChatViewId)) {
 				this.updatePartVisibility(layoutService, chatLocation, false);
 			} else {
 				this.updatePartVisibility(layoutService, chatLocation, true);
@@ -796,11 +795,6 @@ export class CopilotTitleBarMenuRendering extends Disposable implements IWorkben
 	}
 }
 
-export function getEditsViewId(accessor: ServicesAccessor): string {
-	const chatService = accessor.get(IChatService);
-	return chatService.unifiedViewEnabled ? ChatViewId : EditsViewId;
-}
-
 /**
  * Returns whether we can continue clearing/switching chat sessions, false to cancel.
  */
@@ -824,7 +818,7 @@ export async function showClearEditingSessionConfirmation(editingSession: IChatE
 	const title = options?.titleOverride ?? defaultTitle;
 
 	const currentEdits = editingSession.entries.get();
-	const undecidedEdits = currentEdits.filter((edit) => edit.state.get() === WorkingSetEntryState.Modified);
+	const undecidedEdits = currentEdits.filter((edit) => edit.state.get() === ModifiedFileEntryState.Modified);
 
 	const { result } = await dialogService.prompt({
 		title,
@@ -857,7 +851,7 @@ export function shouldShowClearEditingSessionConfirmation(editingSession: IChatE
 	const currentEditCount = currentEdits.length;
 
 	if (currentEditCount) {
-		const undecidedEdits = currentEdits.filter((edit) => edit.state.get() === WorkingSetEntryState.Modified);
+		const undecidedEdits = currentEdits.filter((edit) => edit.state.get() === ModifiedFileEntryState.Modified);
 		return !!undecidedEdits.length;
 	}
 
