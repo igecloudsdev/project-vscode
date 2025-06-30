@@ -37,7 +37,7 @@ import { IChatFollowup, IChatService } from '../../common/chatService.js';
 import { ChatService } from '../../common/chatServiceImpl.js';
 import { ChatSlashCommandService, IChatSlashCommandService } from '../../common/chatSlashCommands.js';
 import { IChatVariablesService } from '../../common/chatVariables.js';
-import { ChatAgentLocation, ChatMode } from '../../common/constants.js';
+import { ChatAgentLocation, ChatModeKind } from '../../common/constants.js';
 import { MockChatService } from './mockChatService.js';
 import { MockChatVariablesService } from './mockChatVariables.js';
 
@@ -50,12 +50,12 @@ const chatAgentWithUsedContext: IChatAgent = {
 	extensionPublisherId: '',
 	extensionDisplayName: '',
 	locations: [ChatAgentLocation.Panel],
-	modes: [ChatMode.Ask],
+	modes: [ChatModeKind.Ask],
 	metadata: {},
 	slashCommands: [],
 	disambiguation: [],
 	async invoke(request, progress, history, token) {
-		progress({
+		progress([{
 			documents: [
 				{
 					uri: URI.file('/test/path/to/file'),
@@ -66,7 +66,7 @@ const chatAgentWithUsedContext: IChatAgent = {
 				}
 			],
 			kind: 'usedContext'
-		});
+		}]);
 
 		return { metadata: { metadataKey: 'value' } };
 	},
@@ -84,12 +84,12 @@ const chatAgentWithMarkdown: IChatAgent = {
 	extensionPublisherId: '',
 	extensionDisplayName: '',
 	locations: [ChatAgentLocation.Panel],
-	modes: [ChatMode.Ask],
+	modes: [ChatModeKind.Ask],
 	metadata: {},
 	slashCommands: [],
 	disambiguation: [],
 	async invoke(request, progress, history, token) {
-		progress({ kind: 'markdownContent', content: new MarkdownString('test') });
+		progress([{ kind: 'markdownContent', content: new MarkdownString('test') }]);
 		return { metadata: { metadataKey: 'value' } };
 	},
 	async provideFollowups(sessionId, token) {
@@ -106,7 +106,7 @@ function getAgentData(id: string): IChatAgentData {
 		publisherDisplayName: '',
 		extensionDisplayName: '',
 		locations: [ChatAgentLocation.Panel],
-		modes: [ChatMode.Ask],
+		modes: [ChatModeKind.Ask],
 		metadata: {},
 		slashCommands: [],
 		disambiguation: [],
