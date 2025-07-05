@@ -11,7 +11,7 @@ export interface IBuiltInExtension {
 	readonly name: string;
 	readonly version: string;
 	readonly repo: string;
-	readonly metadata: any;
+	readonly metadata: unknown;
 }
 
 export interface IProductWalkthrough {
@@ -97,6 +97,7 @@ export interface IProductConfiguration {
 	readonly extensionsGallery?: {
 		readonly serviceUrl: string;
 		readonly controlUrl: string;
+		readonly mcpUrl: string;
 		readonly extensionUrlTemplate: string;
 		readonly resourceUrlTemplate: string;
 		readonly nlsBaseUrl: string;
@@ -117,6 +118,7 @@ export interface IProductConfiguration {
 	readonly languageExtensionTips?: readonly string[];
 	readonly trustedExtensionUrlPublicKeys?: IStringDictionary<string[]>;
 	readonly trustedExtensionAuthAccess?: string[] | IStringDictionary<string[]>;
+	readonly trustedMcpAuthAccess?: string[] | IStringDictionary<string[]>;
 	readonly inheritAuthAccountPreference?: IStringDictionary<string[]>;
 	readonly trustedExtensionProtocolHandlers?: readonly string[];
 
@@ -333,6 +335,7 @@ export interface IDefaultChatAgent {
 	readonly managePlanUrl: string;
 	readonly manageOverageUrl: string;
 	readonly upgradePlanUrl: string;
+	readonly signUpUrl: string;
 
 	readonly providerId: string;
 	readonly providerName: string;

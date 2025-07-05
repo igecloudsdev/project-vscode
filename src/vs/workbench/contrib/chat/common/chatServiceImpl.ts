@@ -27,7 +27,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IWorkbenchAssignmentService } from '../../../services/assignment/common/assignmentService.js';
 import { IExtensionService } from '../../../services/extensions/common/extensions.js';
 import { IChatAgent, IChatAgentCommand, IChatAgentData, IChatAgentHistoryEntry, IChatAgentRequest, IChatAgentResult, IChatAgentService } from './chatAgents.js';
-import { ChatModel, ChatRequestModel, ChatRequestRemovalReason, IChatModel, IChatRequestModel, IChatRequestVariableData, IChatRequestVariableEntry, IChatResponseModel, IExportableChatData, ISerializableChatData, ISerializableChatDataIn, ISerializableChatsData, isImageVariableEntry, normalizeSerializableChatData, toChatHistoryContent, updateRanges } from './chatModel.js';
+import { ChatModel, ChatRequestModel, ChatRequestRemovalReason, IChatModel, IChatRequestModel, IChatRequestVariableData, IChatResponseModel, IExportableChatData, ISerializableChatData, ISerializableChatDataIn, ISerializableChatsData, normalizeSerializableChatData, toChatHistoryContent, updateRanges } from './chatModel.js';
 import { ChatRequestAgentPart, ChatRequestAgentSubcommandPart, ChatRequestSlashCommandPart, IParsedChatRequest, chatAgentLeader, chatSubcommandLeader, getPromptText } from './chatParserTypes.js';
 import { ChatRequestParser } from './chatRequestParser.js';
 import { IChatCompleteResponse, IChatDetail, IChatFollowup, IChatProgress, IChatSendRequestData, IChatSendRequestOptions, IChatSendRequestResponseState, IChatService, IChatTransferredSessionData, IChatUserActionEvent } from './chatService.js';
@@ -35,8 +35,9 @@ import { ChatServiceTelemetry } from './chatServiceTelemetry.js';
 import { ChatSessionStore, IChatTransfer2 } from './chatSessionStore.js';
 import { IChatSlashCommandService } from './chatSlashCommands.js';
 import { IChatTransferService } from './chatTransferService.js';
-import { ChatAgentLocation, ChatConfiguration, ChatMode } from './constants.js';
-import { ChatMessageRole, IChatMessage } from './languageModels.js';
+import { IChatRequestVariableEntry, isImageVariableEntry } from './chatVariableEntries.js';
+import { ChatAgentLocation, ChatConfiguration, ChatModeKind } from './constants.js';
+import { ChatMessageRole, IChatMessage, ILanguageModelsService } from './languageModels.js';
 import { ILanguageModelToolsService } from './languageModelToolsService.js';
 
 const serializedChatKey = 'interactive.sessions';
@@ -60,6 +61,7 @@ type ChatProviderInvokedEvent = {
 	isParticipantDetected: boolean;
 	enableCommandDetection: boolean;
 	attachmentKinds: string[];
+	model: string | undefined;
 };
 
 type ChatProviderInvokedClassification = {
@@ -77,6 +79,7 @@ type ChatProviderInvokedClassification = {
 	isParticipantDetected: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Whether the participant was automatically detected.' };
 	enableCommandDetection: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'Whether participation detection was disabled for this invocation.' };
 	attachmentKinds: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'The types of variables/attachments that the user included with their query.' };
+	model: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'The model used to generate the response.' };
 	owner: 'roblourens';
 	comment: 'Provides insight into the performance of Chat agents.';
 };
@@ -157,6 +160,7 @@ export class ChatService extends Disposable implements IChatService {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IWorkbenchAssignmentService private readonly experimentService: IWorkbenchAssignmentService,
 		@IChatTransferService private readonly chatTransferService: IChatTransferService,
+		@ILanguageModelsService private readonly languageModelsService: ILanguageModelsService,
 	) {
 		super();
 
@@ -490,8 +494,16 @@ export class ChatService extends Disposable implements IChatService {
 			throw new ErrorNoTelemetry('No default agent contributed');
 		}
 
-		// No setup participant to fall back on- wait for extension activation
-		await this.extensionService.activateByEvent(`onChatParticipant:${defaultAgentData.id}`);
+		// Await activation of the extension provided agent
+		// Using `activateById` as workaround for the issue
+		// https://github.com/microsoft/vscode/issues/250590
+		if (!defaultAgentData.isCore) {
+			await this.extensionService.activateById(defaultAgentData.extensionId, {
+				activationEvent: `onChatParticipant:${defaultAgentData.id}`,
+				extensionId: defaultAgentData.extensionId,
+				startup: false
+			});
+		}
 
 		const defaultAgent = this.chatAgentService.getActivatedAgents().find(agent => agent.id === defaultAgentData.id);
 		if (!defaultAgent) {
@@ -602,7 +614,7 @@ export class ChatService extends Disposable implements IChatService {
 				if (request.shouldBeRemovedOnSend.afterUndoStop) {
 					request.response?.finalizeUndoState();
 				} else {
-					this.removeRequest(sessionId, request.id);
+					await this.removeRequest(sessionId, request.id);
 				}
 			}
 		}
@@ -670,20 +682,25 @@ export class ChatService extends Disposable implements IChatService {
 		const source = new CancellationTokenSource();
 		const token = source.token;
 		const sendRequestInternal = async () => {
-			const progressCallback = (progress: IChatProgress) => {
+			const progressCallback = (progress: IChatProgress[]) => {
 				if (token.isCancellationRequested) {
 					return;
 				}
 
 				gotProgress = true;
 
-				if (progress.kind === 'markdownContent') {
-					this.trace('sendRequest', `Provider returned progress for session ${model.sessionId}, ${progress.content.value.length} chars`);
-				} else {
-					this.trace('sendRequest', `Provider returned progress: ${JSON.stringify(progress)}`);
-				}
+				for (let i = 0; i < progress.length; i++) {
+					const isLast = i === progress.length - 1;
+					const progressItem = progress[i];
 
-				model.acceptResponseProgress(request, progress);
+					if (progressItem.kind === 'markdownContent') {
+						this.trace('sendRequest', `Provider returned progress for session ${model.sessionId}, ${progressItem.content.value.length} chars`);
+					} else {
+						this.trace('sendRequest', `Provider returned progress: ${JSON.stringify(progressItem)}`);
+					}
+
+					model.acceptResponseProgress(request, progressItem, !isLast);
+				}
 				completeResponseCreated();
 			};
 
@@ -708,7 +725,8 @@ export class ChatService extends Disposable implements IChatService {
 					numCodeBlocks: getCodeBlocks(request.response?.response.toString() ?? '').length,
 					isParticipantDetected: !!detectedAgent,
 					enableCommandDetection,
-					attachmentKinds: this.attachmentKindsForTelemetry(request.variableData)
+					attachmentKinds: this.attachmentKindsForTelemetry(request.variableData),
+					model: this.resolveModelId(options?.userSelectedModelId),
 				});
 
 				model.cancelRequest(request);
@@ -754,13 +772,12 @@ export class ChatService extends Disposable implements IChatService {
 							rejectedConfirmationData: options?.rejectedConfirmationData,
 							userSelectedModelId: options?.userSelectedModelId,
 							userSelectedTools: options?.userSelectedTools,
-							userSelectedTools2: options?.userSelectedTools2,
-							toolSelectionIsExclusive: options?.toolSelectionIsExclusive,
+							modeInstructions: options?.modeInstructions,
 							editedFileEvents: request.editedFileEvents
 						} satisfies IChatAgentRequest;
 					};
 
-					if (this.configurationService.getValue('chat.detectParticipant.enabled') !== false && this.chatAgentService.hasChatParticipantDetectionProviders() && !agentPart && !commandPart && !agentSlashCommandPart && enableCommandDetection && options?.mode !== ChatMode.Agent && options?.mode !== ChatMode.Edit) {
+					if (this.configurationService.getValue('chat.detectParticipant.enabled') !== false && this.chatAgentService.hasChatParticipantDetectionProviders() && !agentPart && !commandPart && !agentSlashCommandPart && enableCommandDetection && options?.mode !== ChatModeKind.Agent && options?.mode !== ChatModeKind.Edit) {
 						// We have no agent or command to scope history with, pass the full history to the participant detection provider
 						const defaultAgentHistory = this.getHistoryEntriesFromModel(requests, model.sessionId, location, defaultAgent.id);
 
@@ -810,7 +827,7 @@ export class ChatService extends Disposable implements IChatService {
 					}
 					const message = parsedRequest.text;
 					const commandResult = await this.chatSlashCommandService.executeCommand(commandPart.slashCommand.command, message.substring(commandPart.slashCommand.command.length + 1).trimStart(), new Progress<IChatProgress>(p => {
-						progressCallback(p);
+						progressCallback([p]);
 					}), history, location, token);
 					agentOrCommandFollowups = Promise.resolve(commandResult?.followUp);
 					rawResult = {};
@@ -819,7 +836,7 @@ export class ChatService extends Disposable implements IChatService {
 					throw new Error(`Cannot handle request`);
 				}
 
-				if (token.isCancellationRequested) {
+				if (token.isCancellationRequested && !rawResult) {
 					return;
 				} else {
 					if (!rawResult) {
@@ -846,7 +863,8 @@ export class ChatService extends Disposable implements IChatService {
 						location,
 						citations: request.response?.codeCitations.length ?? 0,
 						numCodeBlocks: getCodeBlocks(request.response?.response.toString() ?? '').length,
-						attachmentKinds: this.attachmentKindsForTelemetry(request.variableData)
+						attachmentKinds: this.attachmentKindsForTelemetry(request.variableData),
+						model: this.resolveModelId(options?.userSelectedModelId),
 					});
 					model.setResponse(request, rawResult);
 					completeResponseCreated();
@@ -866,6 +884,7 @@ export class ChatService extends Disposable implements IChatService {
 					});
 				}
 			} catch (err) {
+				this.logService.error(`Error while handling chat request: ${toErrorMessage(err, true)}`);
 				const result = 'error';
 				this.telemetryService.publicLog2<ChatProviderInvokedEvent, ChatProviderInvokedClassification>('interactiveSessionProviderInvoked', {
 					timeToFirstProgress: undefined,
@@ -881,9 +900,9 @@ export class ChatService extends Disposable implements IChatService {
 					numCodeBlocks: 0,
 					enableCommandDetection,
 					isParticipantDetected: !!detectedAgent,
-					attachmentKinds: this.attachmentKindsForTelemetry(request.variableData)
+					attachmentKinds: request ? this.attachmentKindsForTelemetry(request.variableData) : [],
+					model: this.resolveModelId(options?.userSelectedModelId)
 				});
-				this.logService.error(`Error while handling chat request: ${toErrorMessage(err, true)}`);
 				if (request) {
 					const rawResult: IChatAgentResult = { errorDetails: { message: err.message } };
 					model.setResponse(request, rawResult);
@@ -905,6 +924,10 @@ export class ChatService extends Disposable implements IChatService {
 			responseCreatedPromise: responseCreated.p,
 			responseCompletePromise: rawResponsePromise,
 		};
+	}
+
+	private resolveModelId(userSelectedModelId: string | undefined): string | undefined {
+		return userSelectedModelId && this.languageModelsService.lookupLanguageModel(userSelectedModelId)?.id;
 	}
 
 	private prepareContext(attachedContextVariables: IChatRequestVariableEntry[] | undefined): IChatRequestVariableEntry[] {
@@ -929,7 +952,7 @@ export class ChatService extends Disposable implements IChatService {
 	}
 
 	private async checkAgentAllowed(agent: IChatAgentData): Promise<void> {
-		if (agent.modes.includes(ChatMode.Agent)) {
+		if (agent.modes.includes(ChatModeKind.Agent)) {
 			const enabled = await this.experimentService.getTreatment<boolean>('chatAgentEnabled');
 			if (enabled === false) {
 				throw new Error('Agent is currently disabled');
@@ -946,6 +969,8 @@ export class ChatService extends Disposable implements IChatService {
 				// 'range' is range within the prompt text
 				if (v.kind === 'tool') {
 					return 'toolInPrompt';
+				} else if (v.kind === 'toolset') {
+					return 'toolsetInPrompt';
 				} else {
 					return 'fileInPrompt';
 				}
@@ -959,6 +984,8 @@ export class ChatService extends Disposable implements IChatService {
 				return 'directory';
 			} else if (v.kind === 'tool') {
 				return 'tool';
+			} else if (v.kind === 'toolset') {
+				return 'toolset';
 			} else {
 				if (URI.isUri(v.value)) {
 					return 'file';
